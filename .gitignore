@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+ECHO is on.
+# Data files
+raw_data/aaa/~$*.xlsx
+raw_data/bras/~$*.csv
+.env
+*.tmp
+*.bak
