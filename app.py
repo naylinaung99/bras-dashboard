@@ -1,13 +1,9 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import os
 from datetime import datetime
-import re
-import warnings
-
-# Suppress warnings
-warnings.filterwarnings('ignore')
+from io import BytesIO
+import base64
 
 # Set page config
 st.set_page_config(
@@ -46,10 +42,6 @@ st.markdown("""
         font-size: 1rem;
         color: #7f7f7f;
     }
-    .warning {
-        color: #d62728;
-        font-weight: bold;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -58,229 +50,153 @@ st.markdown('<div class="header-style">BRAS Bandwidth Utilization Dashboard</div
 
 @st.cache_data(ttl=3600)
 def load_bras_data():
-    """Load and process BRAS data"""
+    """Load BRAS traffic forecast data (Jan 2025-Jul 2025 actuals only)"""
     try:
-        # Try multiple possible paths
-        possible_paths = [
-            os.path.join('raw_data', 'bras', 'combined_bw_utilization.csv'),
-            os.path.join('data', 'bras', 'combined_bw_utilization.csv'),
-            os.path.join('bras', 'combined_bw_utilization.csv'),
-            'combined_bw_utilization.csv'
-        ]
+        file_path = r"D:\BRAS\BRAS Dashboard\raw_data\bras\BRAS_traffic_forecast_final.xlsx"
+        df = pd.read_excel(file_path, sheet_name='Traffic_Forecast')
         
-        file_path = None
-        for path in possible_paths:
-            if os.path.exists(path):
-                file_path = path
-                break
+        # Filter date range and actual data only
+        df['Month'] = pd.to_datetime(df['Month'])
+        df = df[(df['Month'] >= '2025-01-01') & 
+                (df['Month'] <= '2025-12-31') &
+                (df['Data Type'] == 'Actual')]
         
-        if not file_path:
-            st.error("BRAS data file not found")
-            return pd.DataFrame()
-            
-        # Read and process data
-        df = pd.read_csv(file_path, engine='python', encoding='latin1')
+        # Melt to long format
+        bras_df = df.melt(
+            id_vars=['Month', 'Data Type'], 
+            value_vars=['MDY_BRAS01', 'MDY_BRAS02', 'NPT_BRAS01', 'NPT_BRAS02'],
+            var_name='Location',
+            value_name='MaxSendTrafficRate(Gbps)'
+        )
         
-        # Extract BRAS device info
-        df['BRAS_Device'] = df['NE Location'].str.extract(r'(BRAS\d+)')
-        df['Location'] = df['NE Location'].str.split(',').str[0] + '_' + df['BRAS_Device']
+        # Convert to Mbps and calculate utilization
+        bras_df['MaxSendTrafficRate(Mbps)'] = bras_df['MaxSendTrafficRate(Gbps)'] * 1000
+        bras_df['Total_Capacity'] = 100000  # 100G in Mbps
+        bras_df['Utilization_Pct'] = (bras_df['MaxSendTrafficRate(Mbps)'] / bras_df['Total_Capacity']) * 100
+        bras_df['Month_Name'] = bras_df['Month'].dt.strftime('%b %Y')
+        bras_df['Is_Forecast'] = False
         
-        # Filter for 100GE interfaces
-        df = df[df['MO Location'].str.contains('100GE', na=False)]
+        return bras_df
         
-        if not df.empty:
-            # Clean and convert numeric values
-            df['MaxSendTrafficRate(Mbps)'] = (
-                df['MaxSendTrafficRate(Mbps)']
-                .astype(str).str.replace(',', '')
-                .astype(float)
-            )
-            
-            # Calculate capacity (100G per BRAS)
-            df['Total_Capacity'] = 100000  # 100 Gbps in Mbps
-            
-            # Process dates
-            df['Date'] = pd.to_datetime(df['End Time'])
-            df['Month'] = df['Date'].dt.to_period('M')
-            
-            # Aggregate data
-            monthly_bras = df.groupby(['Month', 'Location']).agg({
-                'MaxSendTrafficRate(Mbps)': 'max',
-                'Total_Capacity': 'first'
-            }).reset_index()
-            
-            # Calculate utilization
-            monthly_bras['Utilization_Pct'] = (
-                monthly_bras['MaxSendTrafficRate(Mbps)'] / 
-                monthly_bras['Total_Capacity']
-            ) * 100
-            
-            # Format for display
-            monthly_bras['Month'] = monthly_bras['Month'].dt.to_timestamp()
-            monthly_bras['Month_Name'] = monthly_bras['Month'].dt.strftime('%b %Y')
-            
-            return monthly_bras
-            
     except Exception as e:
         st.error(f"Error loading BRAS data: {str(e)}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def load_aaa_data():
-    """Load and process AAA users data with comprehensive date handling"""
+    """Load AAA users data (Jan 2025-Jul 2025 actuals only)"""
     try:
-        # Try multiple possible paths
-        possible_paths = [
-            os.path.join('raw_data', 'aaa', 'Monthly AAA.xlsx'),
-            os.path.join('data', 'aaa', 'Monthly AAA.xlsx'),
-            os.path.join('aaa', 'Monthly AAA.xlsx'),
-            'Monthly AAA.xlsx'
-        ]
+        file_path = r"D:\BRAS\BRAS Dashboard\raw_data\aaa\Monthly_AAA.xlsx"
+        df = pd.read_excel(file_path, sheet_name='AAA Users')
         
-        for path in possible_paths:
-            if os.path.exists(path):
-                df = pd.read_excel(path)
-                break
-        else:
-            st.error("AAA data file not found")
-            return pd.DataFrame()
+        # Filter date range and actual data only
+        df['Month'] = pd.to_datetime(df['Month'])
+        df = df[(df['Month'] >= '2025-01-01') & 
+                (df['Month'] <= '2025-12-31') &
+                (df['Data Type'] == 'Actual')]
         
-        # Fix month names and standardize date format
-        df['Month/Year'] = df['Month/Year'].astype(str).str.replace('Aprl', 'Apr')
+        # Melt to long format
+        aaa_df = df.melt(
+            id_vars=['Month', 'Data Type'], 
+            value_vars=['MDY_AAA', 'NPT_AAA'],
+            var_name='Location',
+            value_name='AAA_Users'
+        )
         
-        def parse_date(date_val):
-            try:
-                # Try parsing as datetime
-                if isinstance(date_val, datetime):
-                    return date_val
-                # Try parsing as Excel serial date
-                try:
-                    return pd.to_datetime(float(date_val), unit='D', origin='1899-12-30')
-                except:
-                    pass
-                # Try parsing as string (Apr-25 format)
-                try:
-                    return datetime.strptime(date_val, '%b-%y')
-                except:
-                    pass
-                # Try parsing as YYYY-MM-DD
-                try:
-                    return pd.to_datetime(date_val)
-                except:
-                    pass
-                return None
-            except:
-                return None
+        aaa_df['Month_Name'] = aaa_df['Month'].dt.strftime('%b %Y')
+        aaa_df['Is_Forecast'] = False
         
-        df['Month'] = df['Month/Year'].apply(parse_date)
-        df['Location'] = df['AAA Location'].str.split('_').str[0] + '_AAA'
-        df.rename(columns={'User Quantity': 'AAA_Users'}, inplace=True)
-        df['AAA_Users'] = pd.to_numeric(df['AAA_Users'], errors='coerce')
-        df = df[df['Month'].notna()]
-        
-        # Create Month_Name for display
-        df['Month_Name'] = df['Month'].dt.strftime('%b %Y')
-        
-        return df[['Month', 'Month_Name', 'Location', 'AAA_Users']].sort_values('Month')
+        return aaa_df
         
     except Exception as e:
         st.error(f"Error loading AAA data: {str(e)}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
-def combine_data(bras_df, aaa_df):
-    """Combine BRAS and AAA data"""
+def load_full_data():
+    """Load full data including forecasts for visualization"""
     try:
-        if bras_df.empty or aaa_df.empty:
-            return pd.DataFrame()
-            
-        combined = pd.merge(
-            bras_df, 
-            aaa_df, 
-            on=['Month', 'Month_Name', 'Location'], 
-            how='outer'
+        # BRAS data
+        bras_path = r"D:\BRAS\BRAS Dashboard\raw_data\bras\BRAS_traffic_forecast_final.xlsx"
+        bras_df = pd.read_excel(bras_path, sheet_name='Traffic_Forecast')
+        bras_df['Month'] = pd.to_datetime(bras_df['Month'])
+        bras_df = bras_df[(bras_df['Month'] >= '2025-01-01') & (bras_df['Month'] <= '2025-12-31')]
+        
+        bras_df = bras_df.melt(
+            id_vars=['Month', 'Data Type'], 
+            value_vars=['MDY_BRAS01', 'MDY_BRAS02', 'NPT_BRAS01', 'NPT_BRAS02'],
+            var_name='Location',
+            value_name='MaxSendTrafficRate(Gbps)'
         )
         
-        # Fill missing values
-        combined['MaxSendTrafficRate(Mbps)'] = combined['MaxSendTrafficRate(Mbps)'].fillna(0)
-        combined['Utilization_Pct'] = combined['Utilization_Pct'].fillna(0)
-        combined['AAA_Users'] = combined['AAA_Users'].fillna(0)
-        combined['Total_Capacity'] = combined['Total_Capacity'].fillna(100000)
+        bras_df['MaxSendTrafficRate(Mbps)'] = bras_df['MaxSendTrafficRate(Gbps)'] * 1000
+        bras_df['Total_Capacity'] = 100000
+        bras_df['Utilization_Pct'] = (bras_df['MaxSendTrafficRate(Mbps)'] / bras_df['Total_Capacity']) * 100
+        bras_df['Month_Name'] = bras_df['Month'].dt.strftime('%b %Y')
+        bras_df['Is_Forecast'] = bras_df['Data Type'] == 'Forecast'
         
-        return combined.sort_values('Month')
+        # AAA data
+        aaa_path = r"D:\BRAS\BRAS Dashboard\raw_data\aaa\Monthly_AAA.xlsx"
+        aaa_df = pd.read_excel(aaa_path, sheet_name='AAA Users')
+        aaa_df['Month'] = pd.to_datetime(aaa_df['Month'])
+        aaa_df = aaa_df[(aaa_df['Month'] >= '2025-01-01') & (aaa_df['Month'] <= '2025-12-31')]
+        
+        aaa_df = aaa_df.melt(
+            id_vars=['Month', 'Data Type'], 
+            value_vars=['MDY_AAA', 'NPT_AAA'],
+            var_name='Location',
+            value_name='AAA_Users'
+        )
+        
+        aaa_df['Month_Name'] = aaa_df['Month'].dt.strftime('%b %Y')
+        aaa_df['Is_Forecast'] = aaa_df['Data Type'] == 'Forecast'
+        
+        return pd.concat([bras_df, aaa_df], ignore_index=True)
         
     except Exception as e:
-        st.error(f"Error combining data: {str(e)}")
+        st.error(f"Error loading full data: {str(e)}")
         return pd.DataFrame()
 
 def create_combined_chart(data, region):
-    """Create visualization with consistent data label styling"""
+    """Create visualization with enhanced display"""
     plt.style.use('default')
-    fig, ax = plt.subplots(figsize=(14, 7))
+    fig, ax = plt.subplots(figsize=(16, 8))  # Larger figure size
     
-    # Filter for region
+    # Filter for region and sort
     region_data = data[data['Location'].str.startswith(region)].copy()
-    
-    if region_data.empty:
-        st.warning(f"No data available for {region}")
-        return fig
-    
-    # Get all months in dataset
-    all_months = region_data['Month_Name'].unique()
-    
-   # Plot BRAS devices with exact label positioning
-    bras_devices = {
-        f"{region}_BRAS01": {'color': 'blue', 'offset': 10},  # Above line
-        f"{region}_BRAS02": {'color': 'green', 'offset': -10}  # Below line
-    }
-    
-    for device, style in bras_devices.items():
-        device_data = region_data[region_data['Location'] == device].sort_values('Month')
-        if not device_data.empty:
-            # Apply 10x multiplier only for MDY_BRAS02
-            y_values = device_data['Utilization_Pct'] * (10 if (region == 'MDY' and device.endswith('BRAS02')) else 1)
-            label = f"{device} Utilization" + (" (×10)" if (region == 'MDY' and device.endswith('BRAS02')) else "")
-            
-            # Plot the line
-            ax.plot(
-                device_data['Month_Name'],
-                y_values,
-                marker='o',
-                linewidth=2,
-                color=style['color'],
-                label=label
-            )
-            
-            # Add data labels with precise positioning
-            for i, row in device_data.iterrows():
-                y_val = y_values.loc[i]
-                ax.annotate(
-                    f"{y_val:.1f}%", 
-                    (row['Month_Name'], y_val),
-                    textcoords="offset points",
-                    xytext=(0, style['offset']),  # Exact positioning
-                    ha='center',
-                    fontsize=9,
-                    fontweight='bold',
-                    color=style['color'],
-                    bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8)
-                )
-    
- # Plot AAA Users on secondary axis
-    ax2 = ax.twinx()
-    aaa_data = region_data[region_data['Location'] == f"{region}_AAA"].sort_values('Month')
+    region_data = region_data.sort_values('Month')
+    region_data['Month_Name'] = region_data['Month'].dt.strftime('%b %Y')
+
+    # Plot AAA Users (bars)
+    aaa_data = region_data[region_data['Location'] == f"{region}_AAA"]
     if not aaa_data.empty:
-        bars = ax2.bar(
-            aaa_data['Month_Name'],
-            aaa_data['AAA_Users'],
+        actual_aaa = aaa_data[~aaa_data['Is_Forecast']]
+        forecast_aaa = aaa_data[aaa_data['Is_Forecast']]
+
+        # Actual AAA (gray bars)
+        ax.bar(
+            actual_aaa['Month_Name'],
+            actual_aaa['AAA_Users'],
             color='gray',
-            alpha=0.3,
+            alpha=0.7,
             width=0.4,
             label=f'{region}_AAA Users'
         )
-        # Add AAA data labels (centered)
-        for i, row in aaa_data.iterrows():
-            ax2.annotate(
+        
+        # Forecast AAA (light yellow bars)
+        if not forecast_aaa.empty:
+            ax.bar(
+                forecast_aaa['Month_Name'],
+                forecast_aaa['AAA_Users'],
+                color='lightyellow',
+                edgecolor='gray',
+                width=0.4,
+                label=f'{region}_AAA Users (Forecast)'
+            )
+        
+        # Data labels
+        for _, row in aaa_data.iterrows():
+            ax.annotate(
                 f"{row['AAA_Users']:,.0f}",
                 (row['Month_Name'], row['AAA_Users']),
                 textcoords="offset points",
@@ -289,56 +205,150 @@ def create_combined_chart(data, region):
                 va='center',
                 fontsize=9,
                 fontweight='bold',
+                fontname='Arial',  # <-- This line sets the font
                 color='black',
                 bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8)
             )
-    
+
+    # Secondary y-axis for BRAS utilization
+    ax2 = ax.twinx()
+
+    bras_devices = {
+        f"{region}_BRAS01": {'color': 'blue', 'offset': 10, 'multiplier': 1},
+        f"{region}_BRAS02": {'color': 'green', 'offset': 10, 'multiplier': 50}  # 50x multiplier for BRAS02
+    }
+
+    for device, style in bras_devices.items():
+        device_data = region_data[region_data['Location'] == device]
+        if not device_data.empty:
+            actual_data = device_data[~device_data['Is_Forecast']]
+            forecast_data = device_data[device_data['Is_Forecast']]
+
+            # Apply multiplier (10x for BRAS02)
+            actual_y_values = actual_data['Utilization_Pct'] * style['multiplier']
+            forecast_y_values = forecast_data['Utilization_Pct'] * style['multiplier']
+
+            label = f"{device} Utilization" + (" (×50)" if style['multiplier'] == 50 else "")
+
+            # Plot actual utilization (solid line)
+            ax2.plot(
+                actual_data['Month_Name'],
+                actual_y_values,
+                marker='o',
+                markersize=8,
+                linewidth=2,
+                color=style['color'],
+                label=label,
+                zorder=3
+            )
+
+            # Connect last actual to first forecast
+            if not forecast_data.empty and not actual_data.empty:
+                connecting_x = [
+                    actual_data['Month_Name'].iloc[-1],
+                    forecast_data['Month_Name'].iloc[0]
+                ]
+                connecting_y = [
+                    actual_y_values.iloc[-1],
+                    forecast_y_values.iloc[0]
+                ]
+                ax2.plot(
+                    connecting_x,
+                    connecting_y,
+                    linestyle='--',
+                    linewidth=2,
+                    color=style['color'],
+                    zorder=3
+                )
+
+            # Plot forecast (dotted line)
+            if not forecast_data.empty:
+                ax2.plot(
+                    forecast_data['Month_Name'],
+                    forecast_y_values,
+                    linestyle='--',
+                    linewidth=2,
+                    color=style['color'],
+                    label=f"{label} (Forecast)",
+                    zorder=3
+                )
+
+            # Data labels
+            for _, row in device_data.iterrows():
+                y_val = row['Utilization_Pct'] * style['multiplier']
+                ax2.annotate(
+                    f"{y_val:.1f}%",
+                    (row['Month_Name'], y_val),
+                    textcoords="offset points",
+                    xytext=(0, style['offset']),
+                    ha='center',
+                    fontsize=9,
+                    fontweight='bold',
+                    fontname='Arial',  # <-- This line sets the font
+                    color=style['color'],
+                    bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8),
+                    zorder=4
+                )
+
     # Formatting
-    ax.set_xlabel('Month')
-    ax.set_ylabel('Utilization (%)')
-    if not aaa_data.empty:
-        ax2.set_ylabel('AAA Users')
-    
-    ax.set_ylim(0, 100)
-    ax.axhline(y=80, color='red', linestyle=':', label='80% Threshold')
-    
-    # Combine legends
+    ax.set_xlabel('Month', fontsize=12)
+    ax.set_ylabel('AAA Users', fontsize=12)
+    ax2.set_ylabel('Utilization (%)', fontsize=12)
+    ax2.set_ylim(0, 100)
+    ax2.axhline(y=80, color='red', linestyle=':', label='80% Threshold', zorder=2)
+
+    # Combine legends and position them better
     lines1, labels1 = ax.get_legend_handles_labels()
-    if not aaa_data.empty:
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        lines1 += lines2
-        labels1 += labels2
-    ax.legend(lines1, labels1, loc='upper left')
-    
-    plt.title(f'{region} - BRAS Utilization & AAA Users')
-    plt.xticks(rotation=45)
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax2.legend(
+        lines1 + lines2, 
+        labels1 + labels2, 
+        loc='upper center',
+        bbox_to_anchor=(0.5, -0.15),
+        ncol=3,
+        fontsize=10
+    )
+
+    plt.title(f'{region} - BRAS Utilization & AAA Users (Actual & Forecast)', fontsize=14, pad=20)
+    plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-    
+
     return fig
+
+def get_image_download_link(fig, filename):
+    """Generate a download link for the chart image"""
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode()
+    href = f'<a href="data:image/png;base64,{b64}" download="{filename}">Download Chart Image</a>'
+    return href
 
 def main():
     try:
+        # Load actual data for KPIs (Jan-Jul 2025)
         bras_df = load_bras_data()
         aaa_df = load_aaa_data()
-        combined_df = combine_data(bras_df, aaa_df)
-
-        if not combined_df.empty:
-            # Sidebar filters
-            st.sidebar.header("Dashboard Filters")
+        kpi_df = pd.concat([bras_df, aaa_df], ignore_index=True)
+        
+        # Load full data for visualization (including forecasts)
+        full_df = load_full_data()
+        
+        if not kpi_df.empty and not full_df.empty:
             region = st.sidebar.selectbox("Select Region:", ['MDY', 'NPT'])
             
-            # Display KPIs - Showing Peak Values
-            st.markdown("### Key Performance Indicators")
+            # Display KPIs (using actual data only)
+            st.markdown("### Key Performance Indicators (Jan-Jul 2025 Actual Data)")
             cols = st.columns(3)
             
-            # Get peak values for the selected region
-            region_data = combined_df[combined_df['Location'].str.startswith(region)]
+            # Get actual data for selected region
+            region_kpi_data = kpi_df[kpi_df['Location'].str.startswith(region)]
             
             # BRAS01 Peak Utilization
-            bras01_data = region_data[region_data['Location'] == f"{region}_BRAS01"]
+            bras01_data = region_kpi_data[region_kpi_data['Location'] == f"{region}_BRAS01"]
             if not bras01_data.empty:
-                peak_util = bras01_data['MaxSendTrafficRate(Mbps)'].max() / 1000
-                peak_month = bras01_data.loc[bras01_data['MaxSendTrafficRate(Mbps)'].idxmax()]['Month_Name']
+                peak_util = bras01_data['MaxSendTrafficRate(Gbps)'].max()
+                peak_month = bras01_data.loc[bras01_data['MaxSendTrafficRate(Gbps)'].idxmax()]['Month_Name']
                 with cols[0]:
                     st.markdown(f'<div class="metric-card">'
                               f'<div class="metric-value">{peak_util:.1f} Gbps</div>'
@@ -347,10 +357,10 @@ def main():
                               unsafe_allow_html=True)
             
             # BRAS02 Peak Utilization
-            bras02_data = region_data[region_data['Location'] == f"{region}_BRAS02"]
+            bras02_data = region_kpi_data[region_kpi_data['Location'] == f"{region}_BRAS02"]
             if not bras02_data.empty:
-                peak_util = bras02_data['MaxSendTrafficRate(Mbps)'].max() / 1000
-                peak_month = bras02_data.loc[bras02_data['MaxSendTrafficRate(Mbps)'].idxmax()]['Month_Name']
+                peak_util = bras02_data['MaxSendTrafficRate(Gbps)'].max()
+                peak_month = bras02_data.loc[bras02_data['MaxSendTrafficRate(Gbps)'].idxmax()]['Month_Name']
                 with cols[1]:
                     st.markdown(f'<div class="metric-card">'
                               f'<div class="metric-value">{peak_util:.1f} Gbps</div>'
@@ -359,7 +369,7 @@ def main():
                               unsafe_allow_html=True)
             
             # AAA Peak Users
-            aaa_data = region_data[region_data['Location'] == f"{region}_AAA"]
+            aaa_data = region_kpi_data[region_kpi_data['Location'] == f"{region}_AAA"]
             if not aaa_data.empty:
                 peak_users = aaa_data['AAA_Users'].max()
                 peak_month = aaa_data.loc[aaa_data['AAA_Users'].idxmax()]['Month_Name']
@@ -369,51 +379,124 @@ def main():
                               f'<div class="metric-label">{region}_AAA Peak Users</div>'
                               f'<div class="metric-label">({peak_month})</div></div>', 
                               unsafe_allow_html=True)
+            
+                    # Create downloadable KPI table
+                    st.markdown("### Download KPIs")
+                    kpi_report = pd.DataFrame({
+                        'Metric': [
+                            f'{region}_BRAS01 Peak Utilization (Gbps)',
+                            f'{region}_BRAS02 Peak Utilization (Gbps) (×50)',
+                            f'{region}_AAA Peak Users'
+                        ],
+                        'Value': [
+                            bras01_data['MaxSendTrafficRate(Gbps)'].max(),
+                            bras02_data['MaxSendTrafficRate(Gbps)'].max() * 50,  # Scale BRAS02 by 50x
+                            aaa_data['AAA_Users'].max()
+                        ],
+                        'Month': [
+                            bras01_data.loc[bras01_data['MaxSendTrafficRate(Gbps)'].idxmax()]['Month_Name'],
+                            bras02_data.loc[bras02_data['MaxSendTrafficRate(Gbps)'].idxmax()]['Month_Name'],
+                            aaa_data.loc[aaa_data['AAA_Users'].idxmax()]['Month_Name']
+                        ]
+                    })
 
-            # Main visualization
-            st.markdown("### Bandwidth Utilization & AAA Users")
-            fig = create_combined_chart(combined_df, region)
+                    # Download button for KPIs
+                    kpi_csv = kpi_report.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download KPIs as CSV",
+                        data=kpi_csv,
+                        file_name=f"{region}_BRAS_KPIs.csv",
+                        mime="text/csv"
+)   
+            # Main visualization (with forecasts)
+            st.markdown("### Bandwidth Utilization & AAA Users (With Forecast)")
+            fig = create_combined_chart(full_df, region)
             st.pyplot(fig)
             
+            # Create downloadable report
+            st.markdown("### Download Report")
+            
+            # Create a DataFrame for KPIs
+            kpi_report = pd.DataFrame({
+                'Metric': [
+                    f'{region}_BRAS01 Peak Utilization (Gbps)',
+                    f'{region}_BRAS02 Peak Utilization (Gbps)',
+                    f'{region}_AAA Peak Users'
+                ],
+                'Value': [
+                    bras01_data['MaxSendTrafficRate(Gbps)'].max(),
+                    bras02_data['MaxSendTrafficRate(Gbps)'].max(),
+                    aaa_data['AAA_Users'].max()
+                ],
+                'Month': [
+                    bras01_data.loc[bras01_data['MaxSendTrafficRate(Gbps)'].idxmax()]['Month_Name'],
+                    bras02_data.loc[bras02_data['MaxSendTrafficRate(Gbps)'].idxmax()]['Month_Name'],
+                    aaa_data.loc[aaa_data['AAA_Users'].idxmax()]['Month_Name']
+                ]
+            })
+            
+            # Create Excel file with KPIs and chart
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                kpi_report.to_excel(writer, sheet_name='KPIs', index=False)
+                
+                # Add chart image to Excel
+                workbook = writer.book
+                worksheet = workbook.add_worksheet('Chart')
+                buf = BytesIO()
+                fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
+                buf.seek(0)
+                worksheet.insert_image('A1', 'chart.png', {'image_data': buf})
+            
+            # Download buttons
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="📥 Download Full Data as Excel",
+                    data=output.getvalue(),
+                    file_name=f"{region}_BRAS_Report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col2:
+                st.markdown(get_image_download_link(fig, f"{region}_chart.png"), unsafe_allow_html=True)
+
             # Data tables
             st.markdown("### Detailed Data")
             
-            # Create separate tabs for BRAS and AAA data
             tab1, tab2 = st.tabs(["BRAS Utilization", "AAA Users"])
             
             with tab1:
-                bras_data = combined_df[
-                    combined_df['Location'].str.startswith(f"{region}_BRAS")
-                ][['Month_Name', 'Location', 'MaxSendTrafficRate(Mbps)', 'Utilization_Pct']]
+                bras_data = full_df[
+                    (full_df['Location'].str.startswith(f"{region}_BRAS")) &
+                    (full_df['Month'] <= '2025-12-31')
+                ][['Month_Name', 'Location', 'MaxSendTrafficRate(Gbps)', 'Utilization_Pct', 'Is_Forecast']]
                 st.dataframe(
                     bras_data.rename(columns={
                         'Month_Name': 'Month',
-                        'MaxSendTrafficRate(Mbps)': 'Peak Utilization (Mbps)',
-                        'Utilization_Pct': 'Utilization (%)'
+                        'MaxSendTrafficRate(Gbps)': 'Peak Utilization (Gbps)',
+                        'Utilization_Pct': 'Utilization (%)',
+                        'Is_Forecast': 'Is Forecast'
                     }).style.format({
-                        'Peak Utilization (Mbps)': '{:,.2f}',
+                        'Peak Utilization (Gbps)': '{:,.2f}',
                         'Utilization (%)': '{:.1f}%'
-                    }),
+                    }).apply(lambda x: ['background: lightyellow' if x['Is Forecast'] else '' for i in x], axis=1),
                     height=400
                 )
             
             with tab2:
-                aaa_data = combined_df[
-                    combined_df['Location'] == f"{region}_AAA"
-                ][['Month_Name', 'AAA_Users']]
+                aaa_data = full_df[
+                    (full_df['Location'] == f"{region}_AAA") &
+                    (full_df['Month'] <= '2025-12-31')
+                ][['Month_Name', 'AAA_Users', 'Is_Forecast']]
                 st.dataframe(
                     aaa_data.rename(columns={
                         'Month_Name': 'Month',
+                        'Is_Forecast': 'Is Forecast'
                     }).style.format({
                         'AAA_Users': '{:,.0f}'
-                    }),
+                    }).apply(lambda x: ['background: lightyellow' if x['Is Forecast'] else '' for i in x], axis=1),
                     height=400
                 )
-            
-            # Footer
-            st.markdown("---")
-            st.markdown(f"**Data Last Updated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-            st.markdown("**Note:** Utilization calculated based on 100G interface capacity per BRAS")
 
         else:
             st.warning("No data available to display. Please check your data files.")
