@@ -4,7 +4,5 @@ numpy==2.3.1
 matplotlib==3.10.3
 openpyxl==3.1.2
 pygit2==1.14.1
-git+https://github.com/naylinaung99/bras-dashboard.git
-git-lfs
-
+streamlit-authenticator==0.2.3
 

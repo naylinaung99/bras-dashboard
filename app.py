@@ -247,7 +247,6 @@ def create_combined_chart(data, region):
                 va='center',
                 fontsize=9,
                 fontweight='bold',
-                fontname='Arial',
                 color='black',
                 bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8)
             )
@@ -326,7 +325,6 @@ def create_combined_chart(data, region):
                     ha='center',
                     fontsize=9,
                     fontweight='bold',
-                    fontname='Arial',
                     color=style['color'],
                     bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8),
                     zorder=4
