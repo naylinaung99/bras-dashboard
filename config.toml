@@ -1,0 +1,4 @@
+[server]
+headless = false  # This is the key setting
+port = 8501
+enableCORS = false

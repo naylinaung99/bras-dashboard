@@ -1,9 +1,47 @@
 import streamlit as st
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
 from io import BytesIO
 import base64
+
+def get_data_path(filename):
+    """Get absolute path to data file with multiple fallback options"""
+    # List of possible base directories to check
+    base_dirs = [
+        os.path.dirname(__file__),  # Current script directory
+        os.getcwd(),  # Current working directory
+        os.path.join(os.path.dirname(__file__), ".."),  # One level up
+        os.path.join(os.getcwd(), "..")  # One level up from cwd
+    ]
+    
+    # List of possible data folder structures
+    data_folders = [
+        os.path.join("raw_data", "bras" if "BRAS" in filename else "aaa"),
+        os.path.join("data", "bras" if "BRAS" in filename else "aaa"),
+        "raw_data",
+        "data"
+    ]
+    
+    # Try all combinations of base directories and data folders
+    for base_dir in base_dirs:
+        for data_folder in data_folders:
+            path = os.path.join(base_dir, data_folder, filename)
+            if os.path.exists(path):
+                st.write(f"Found file at: {path}")
+                return path
+    
+    # If not found, show all attempted paths
+    attempted_paths = "\n".join(
+        os.path.join(base_dir, data_folder, filename)
+        for base_dir in base_dirs
+        for data_folder in data_folders
+    )
+    raise FileNotFoundError(
+        f"Could not find {filename} in any expected location.\n"
+        f"Attempted paths:\n{attempted_paths}"
+    )
 
 # Set page config
 st.set_page_config(
@@ -52,7 +90,7 @@ st.markdown('<div class="header-style">BRAS Bandwidth Utilization Dashboard</div
 def load_bras_data():
     """Load BRAS traffic forecast data (Jan 2025-Jul 2025 actuals only)"""
     try:
-        file_path = r"D:\BRAS\BRAS Dashboard\raw_data\bras\BRAS_traffic_forecast_final.xlsx"
+        file_path = get_data_path("BRAS_traffic_forecast_final.xlsx")
         df = pd.read_excel(file_path, sheet_name='Traffic_Forecast')
         
         # Filter date range and actual data only
@@ -80,13 +118,15 @@ def load_bras_data():
         
     except Exception as e:
         st.error(f"Error loading BRAS data: {str(e)}")
+        st.error(f"Current working directory: {os.getcwd()}")
+        st.error(f"Attempted to load from: {os.path.join('raw_data', 'bras', 'BRAS_traffic_forecast_final.xlsx')}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def load_aaa_data():
     """Load AAA users data (Jan 2025-Jul 2025 actuals only)"""
     try:
-        file_path = r"D:\BRAS\BRAS Dashboard\raw_data\aaa\Monthly_AAA.xlsx"
+        file_path = get_data_path("Monthly_AAA.xlsx")
         df = pd.read_excel(file_path, sheet_name='AAA Users')
         
         # Filter date range and actual data only
@@ -110,6 +150,8 @@ def load_aaa_data():
         
     except Exception as e:
         st.error(f"Error loading AAA data: {str(e)}")
+        st.error(f"Current working directory: {os.getcwd()}")
+        st.error(f"Attempted to load from: {os.path.join('raw_data', 'aaa', 'Monthly_AAA.xlsx')}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
@@ -117,7 +159,7 @@ def load_full_data():
     """Load full data including forecasts for visualization"""
     try:
         # BRAS data
-        bras_path = r"D:\BRAS\BRAS Dashboard\raw_data\bras\BRAS_traffic_forecast_final.xlsx"
+        bras_path = get_data_path("BRAS_traffic_forecast_final.xlsx")
         bras_df = pd.read_excel(bras_path, sheet_name='Traffic_Forecast')
         bras_df['Month'] = pd.to_datetime(bras_df['Month'])
         bras_df = bras_df[(bras_df['Month'] >= '2025-01-01') & (bras_df['Month'] <= '2025-12-31')]
@@ -136,7 +178,7 @@ def load_full_data():
         bras_df['Is_Forecast'] = bras_df['Data Type'] == 'Forecast'
         
         # AAA data
-        aaa_path = r"D:\BRAS\BRAS Dashboard\raw_data\aaa\Monthly_AAA.xlsx"
+        aaa_path = get_data_path("Monthly_AAA.xlsx")
         aaa_df = pd.read_excel(aaa_path, sheet_name='AAA Users')
         aaa_df['Month'] = pd.to_datetime(aaa_df['Month'])
         aaa_df = aaa_df[(aaa_df['Month'] >= '2025-01-01') & (aaa_df['Month'] <= '2025-12-31')]
@@ -205,7 +247,7 @@ def create_combined_chart(data, region):
                 va='center',
                 fontsize=9,
                 fontweight='bold',
-                fontname='Arial',  # <-- This line sets the font
+                fontname='Arial',
                 color='black',
                 bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8)
             )
@@ -224,7 +266,7 @@ def create_combined_chart(data, region):
             actual_data = device_data[~device_data['Is_Forecast']]
             forecast_data = device_data[device_data['Is_Forecast']]
 
-            # Apply multiplier (10x for BRAS02)
+            # Apply multiplier (50x for BRAS02)
             actual_y_values = actual_data['Utilization_Pct'] * style['multiplier']
             forecast_y_values = forecast_data['Utilization_Pct'] * style['multiplier']
 
@@ -284,7 +326,7 @@ def create_combined_chart(data, region):
                     ha='center',
                     fontsize=9,
                     fontweight='bold',
-                    fontname='Arial',  # <-- This line sets the font
+                    fontname='Arial',
                     color=style['color'],
                     bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8),
                     zorder=4
@@ -323,9 +365,19 @@ def get_image_download_link(fig, filename):
     b64 = base64.b64encode(buf.read()).decode()
     href = f'<a href="data:image/png;base64,{b64}" download="{filename}">Download Chart Image</a>'
     return href
-
+    
 def main():
+    # Debug information
+    st.sidebar.title("Debug Info")
+    st.sidebar.write("Current working directory:", os.getcwd())
+    
     try:
+        # Check if data files exist
+        bras_path = get_data_path("BRAS_traffic_forecast_final.xlsx")
+        aaa_path = get_data_path("Monthly_AAA.xlsx")
+        st.sidebar.write("BRAS file exists:", os.path.exists(bras_path))
+        st.sidebar.write("AAA file exists:", os.path.exists(aaa_path))
+        
         # Load actual data for KPIs (Jan-Jul 2025)
         bras_df = load_bras_data()
         aaa_df = load_aaa_data()
@@ -380,34 +432,6 @@ def main():
                               f'<div class="metric-label">({peak_month})</div></div>', 
                               unsafe_allow_html=True)
             
-                    # Create downloadable KPI table
-                    st.markdown("### Download KPIs")
-                    kpi_report = pd.DataFrame({
-                        'Metric': [
-                            f'{region}_BRAS01 Peak Utilization (Gbps)',
-                            f'{region}_BRAS02 Peak Utilization (Gbps) (×50)',
-                            f'{region}_AAA Peak Users'
-                        ],
-                        'Value': [
-                            bras01_data['MaxSendTrafficRate(Gbps)'].max(),
-                            bras02_data['MaxSendTrafficRate(Gbps)'].max() * 50,  # Scale BRAS02 by 50x
-                            aaa_data['AAA_Users'].max()
-                        ],
-                        'Month': [
-                            bras01_data.loc[bras01_data['MaxSendTrafficRate(Gbps)'].idxmax()]['Month_Name'],
-                            bras02_data.loc[bras02_data['MaxSendTrafficRate(Gbps)'].idxmax()]['Month_Name'],
-                            aaa_data.loc[aaa_data['AAA_Users'].idxmax()]['Month_Name']
-                        ]
-                    })
-
-                    # Download button for KPIs
-                    kpi_csv = kpi_report.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download KPIs as CSV",
-                        data=kpi_csv,
-                        file_name=f"{region}_BRAS_KPIs.csv",
-                        mime="text/csv"
-)   
             # Main visualization (with forecasts)
             st.markdown("### Bandwidth Utilization & AAA Users (With Forecast)")
             fig = create_combined_chart(full_df, region)
@@ -420,12 +444,12 @@ def main():
             kpi_report = pd.DataFrame({
                 'Metric': [
                     f'{region}_BRAS01 Peak Utilization (Gbps)',
-                    f'{region}_BRAS02 Peak Utilization (Gbps)',
+                    f'{region}_BRAS02 Peak Utilization (Gbps) (×50)',
                     f'{region}_AAA Peak Users'
                 ],
                 'Value': [
                     bras01_data['MaxSendTrafficRate(Gbps)'].max(),
-                    bras02_data['MaxSendTrafficRate(Gbps)'].max(),
+                    bras02_data['MaxSendTrafficRate(Gbps)'].max() * 50,
                     aaa_data['AAA_Users'].max()
                 ],
                 'Month': [
@@ -503,6 +527,10 @@ def main():
 
     except Exception as e:
         st.error(f"Application error: {str(e)}")
+        st.error("Please ensure:")
+        st.error("1. Your data files exist in the correct location")
+        st.error("2. The files have the correct names")
+        st.error("3. You have all required permissions to access the files")
 
 if __name__ == "__main__":
     main()
